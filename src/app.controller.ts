@@ -59,6 +59,28 @@ export class AppController {
     }
   }
 
+  @EventPattern('feed_rebuild')
+  async handleFeedRebuild(
+    @Payload()
+    data: {
+      userId: string;
+      posts: Record<string, unknown>[];
+    },
+  ) {
+    const feedKey = `user:${data.userId}:feed`;
+    const pipeline = this.redisClient.pipeline();
+    for (const post of data.posts) {
+      const postId = String(post.id);
+      pipeline.hset(`review:${postId}`, this.serialize(post));
+      const createdAt = post.createdAt
+        ? Date.parse(String(post.createdAt))
+        : Date.now();
+      pipeline.zadd(feedKey, createdAt, postId);
+    }
+    pipeline.zremrangebyrank(feedKey, 0, -201);
+    await pipeline.exec();
+  }
+
   private serialize(data: Record<string, unknown>): Record<string, string> {
     const out: Record<string, string> = {};
     for (const [key, value] of Object.entries(data)) {
