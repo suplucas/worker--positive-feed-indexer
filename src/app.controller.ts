@@ -1,14 +1,18 @@
-import { Controller, Get } from '@nestjs/common';
-import { AppService } from './app.service.js';
+import { Controller } from '@nestjs/common';
+import { EventPattern, Payload } from '@nestjs/microservices';
+import { Inject } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Redis } from 'ioredis';
+import { Follow } from './entity/Follow.js';
 
 @Controller()
 export class AppController {
-  constructor(private readonly appService: AppService) {}
-
-  @Get()
-  getHello(): string {
-    return this.appService.getHello();
-  }
+  constructor(
+    @Inject('REDIS_CLIENT') private readonly redisClient: Redis,
+    @InjectRepository(Follow)
+    private readonly followRepository: Repository<Follow>,
+  ) {}
 
   @EventPattern('post_created')
   async handlePostCreated(
@@ -16,49 +20,57 @@ export class AppController {
     data: {
       userId: string;
       postId: string;
-      postData: any;
+      postData: Record<string, unknown>;
       timestamp: number;
     },
   ) {
-    // 1. Salva o conteúdo do post de forma única no Redis (Operação O(1) - Super rápida)
     await this.redisClient.hset(
       `review:${data.postId}`,
       this.serialize(data.postData),
     );
 
-    // 2. Busca os IDs dos seguidores do banco (Ex: retorna um array de strings)
-    const followerIds = await this.followerRepository.getFollowerIds(
-      data.userId,
-    );
+    const follows = await this.followRepository.find({
+      where: { followingId: data.userId },
+      select: ['followerId'],
+    });
+    const followerIds = follows.map((f) => f.followerId);
 
-    // SE FOR UMA CELEBRIDADE: Você interrompe aqui e não atualiza o feed de ninguém!
+    // celebridade: não faz fan-out em massa; só o próprio autor
     if (followerIds.length > 5000) {
-      // Adiciona o post apenas numa lista global de "posts de celebridades"
       await this.redisClient.zadd(
-        `user:${data.userId}:posts`,
+        `user:${data.userId}:feed`,
         data.timestamp,
         data.postId,
       );
       return;
     }
 
-    // SE FOR USUÁRIO COMUM: Divide os seguidores em lotes de 1000 para não estourar a memória
+    const allIds = [...new Set([data.userId, ...followerIds])];
     const chunkSize = 1000;
-    for (let i = 0; i < followerIds.length; i += chunkSize) {
-      const chunk = followerIds.slice(i, i + chunkSize);
-
-      // Abre um pipeline para enviar 1000 comandos de uma vez só ao Redis
+    for (let i = 0; i < allIds.length; i += chunkSize) {
+      const chunk = allIds.slice(i, i + chunkSize);
       const pipeline = this.redisClient.pipeline();
-
-      chunk.forEach((followerId) => {
-        const feedKey = `user:${followerId}:feed`;
+      chunk.forEach((id) => {
+        const feedKey = `user:${id}:feed`;
         pipeline.zadd(feedKey, data.timestamp, data.postId);
-        // Mantém o feed do usuário leve (ex: apenas as últimas 200 postagens)
         pipeline.zremrangebyrank(feedKey, 0, -201);
       });
-
-      // Executa as 1000 inserções em uma única viagem de rede
       await pipeline.exec();
     }
+  }
+
+  private serialize(data: Record<string, unknown>): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (value === null || value === undefined) continue;
+      if (value instanceof Date) {
+        out[key] = value.toISOString();
+      } else if (typeof value === 'object') {
+        out[key] = JSON.stringify(value);
+      } else {
+        out[key] = String(value);
+      }
+    }
+    return out;
   }
 }

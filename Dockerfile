@@ -1,26 +1,30 @@
 # Base image
-FROM node:18
+FROM node:26-alpine AS builder
 
-# Create app directory
+RUN apk add --no-cache libc6-compat python3 make g++
+
 WORKDIR /usr/src/app
 
-# A wildcard is used to ensure both package.json AND package-lock.json are copied
 COPY package*.json ./
 
-# Install app dependencies
-RUN npm install
+RUN npm ci --include=optional
 
-# Bundle app source
 COPY . .
 
-# Copy the .env and .env.development files
-COPY .env .env.development ./
-
-# Creates a "dist" folder with the production build
 RUN npm run build
 
-# Expose the port on which the app will run
-EXPOSE 3001
+FROM node:26-alpine AS runner
 
-# Start the server using the production build
-CMD ["npm", "run", "start:prod"]
+RUN apk add --no-cache libc6-compat
+
+WORKDIR /usr/src/app
+
+ENV NODE_ENV=production
+
+COPY package*.json ./
+
+RUN npm ci --omit=dev --include=optional
+
+COPY --from=builder /usr/src/app/dist ./dist
+
+CMD ["node", "dist/main.js"]
