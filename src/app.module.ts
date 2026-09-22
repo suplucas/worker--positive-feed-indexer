@@ -4,12 +4,21 @@ import { Redis } from 'ioredis';
 import { AppController } from './app.controller.js';
 import { Follow } from './entity/Follow.js';
 
+const dbUrl =
+  process.env.DATABASE_URL ||
+  (process.env.DB_HOST?.includes('://') ? process.env.DB_HOST : undefined);
+const redisUrl =
+  process.env.REDIS_URL ||
+  (process.env.REDIS_HOST?.includes('://')
+    ? process.env.REDIS_HOST
+    : undefined);
+
 @Module({
   imports: [
     TypeOrmModule.forRoot({
       type: 'postgres',
-      ...(process.env.DATABASE_URL
-        ? { url: process.env.DATABASE_URL }
+      ...(dbUrl
+        ? { url: dbUrl }
         : {
             host: process.env.DB_HOST || 'localhost',
             port: parseInt(process.env.DB_PORT || '5432', 10),
@@ -27,8 +36,8 @@ import { Follow } from './entity/Follow.js';
     {
       provide: 'REDIS_CLIENT',
       useFactory: () =>
-        process.env.REDIS_URL
-          ? new Redis(process.env.REDIS_URL)
+        redisUrl
+          ? new Redis(redisUrl)
           : new Redis({
               host: process.env.REDIS_HOST || 'localhost',
               port: parseInt(process.env.REDIS_PORT || '6379', 10),
